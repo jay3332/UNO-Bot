@@ -1,0 +1,4 @@
+git+https://github.com/Rapptz/discord.py
+git+https://github.com/Gorialis/jishaku
+python-dotenv
+Pillow
