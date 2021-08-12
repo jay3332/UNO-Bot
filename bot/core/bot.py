@@ -56,6 +56,7 @@ class UNOBot(commands.Bot):
 
     def load_extensions(self) -> None:
         self.load_extension('jishaku')
+        self.load_extension('bot.extensions.uno')
 
     def setup(self) -> None:
         self.loop.create_task(self._dispatch_first_ready())
