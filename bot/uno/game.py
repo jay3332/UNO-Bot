@@ -268,6 +268,7 @@ class UNO:
         self.deck: Deck = Deck(self)
         self.hands: list[Hand] = []  # This will also determine order
         self.current: Card = None
+        self.direction: int = 1
         self.turn: int = 0
 
         self._message: discord.Message = None
@@ -328,3 +329,38 @@ class UNO:
     async def start(self) -> None:
         await self._run_initial_prompts()
         self._setup()
+
+    async def _update(self, content: str = None, **kwargs) -> None:
+        await self._resend(content, embed=self.build_embed(), **kwargs)
+
+    def build_embed(self) -> None:
+        embed = discord.Embed(timestamp=discord.utils.utcnow())
+        embed.set_thumbnail(url=self.current.image_url)
+
+        embed.description = '\n'.join(
+            (
+                hand.player.name
+                if hand.player == self.current
+                else f'**{hand.player.name}**'
+            ) + f'({len(hand):,} cards)'
+            for hand in self.hands
+        )
+
+        embed.set_author(
+            name=f"{self.current_player.name}'s turn!",
+            icon_url=self.current_player.avatar.url
+        )
+        return embed
+
+    # list to take care of stacks
+    async def handle_play(self, cards: list[Card]) -> None:
+        for card in cards:
+            self.current_hand.cards.remove(card)
+
+        if len(cards) == 1:
+            content = f'{self.current_player.name} plays a {cards[0].emoji}.'
+        else:
+            content = f'{self.current_player.name} plays: {" ".join(card.emoji for card in cards)}'
+
+        self.current = cards[-1]
+        await self._update(content)
