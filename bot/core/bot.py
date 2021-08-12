@@ -47,7 +47,8 @@ class UNOBot(commands.Bot):
             intents=INTENTS,
             allowed_mentions=ALLOWED_MENTIONS,
             status=discord.Status.dnd,
-            activity=discord.Activity(name='UNO', type=discord.ActivityType.playing)
+            activity=discord.Activity(name='UNO', type=discord.ActivityType.playing),
+            chunk_guilds_at_startup=False
         )
         self.setup()
 
