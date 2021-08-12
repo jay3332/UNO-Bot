@@ -5,9 +5,13 @@ import random
 
 from discord.ext import commands
 from dataclasses import dataclass
-from typing import Iterable, Literal, NamedTuple, Union, overload
+from typing import Iterable, Literal, NamedTuple, Optional, TypeVar, Union, overload
 
 from .cards import Card, create_deck
+from .enums import CardType, Color
+from ..utils.emojis import COLORS
+
+E = TypeVar('E', bound='Hand')
 
 
 @dataclass
@@ -16,6 +20,7 @@ class RuleSet:
     progressive: bool = True
     seven_o: bool = False
     jump_in: bool = False
+    no_u: bool = False
 
 
 class RuleSetChoice(NamedTuple):
@@ -54,6 +59,10 @@ class RuleSetPrompt(discord.ui.Select['RuleSetPromptingView']):
         'jump_in': RuleSetChoice(
             'Jump In',
             'Immediately play a card that is a duplicate of the current card, even if it isn\'t your turn.'
+        ),
+        'no_u': RuleSetChoice(
+            'No U',
+            'Playing a reverse card on a draw card will require the opponent to draw the cards instead.'
         )
     }
 
@@ -92,6 +101,7 @@ class RuleSetPromptingView(HostOnlyView):
     @discord.ui.button(label='Continue', style=discord.ButtonStyle.success, row=1)
     async def _continue(self, _button: discord.ui.Button, _interaction: discord.Interaction, /) -> None:
         await self.game.queue_players()
+        self.stop()
 
 
 class PlayerQueueingView(discord.ui.View):
@@ -105,35 +115,10 @@ class PlayerQueueingView(discord.ui.View):
         self.game: UNO = game
         self.players: set[discord.Member] = game.players
         game.players.add(self.game.host)  # Just in case
-
-        self.immediate_start_button: discord.ui.Button = discord.ui.Button(
-            label='Start!',
-            style=discord.ButtonStyle.primary,
-            disabled=True
-        )
-
-        async def _(interaction: discord.Interaction, /) -> None:
-            if interaction.user != self.game.host:
-                return await interaction.response.send_message(
-                    'Only the host can start this game.',
-                    ephemeral=True
-                )
-
-            if len(self.players) < 2:
-                return await interaction.response.send_message(
-                    'There must be at least 2 players in order to start this game.',
-                    ephemeral=True
-                )
-
-            self.stop()
-
-        self.immediate_start_button.callback = _
-
         super().__init__(timeout=180)
-        self.add_item(self.immediate_start_button)
 
     async def _update(self) -> None:
-        self.immediate_start_button.disabled = len(self.players) > 1
+        self.immediate_start.disabled = len(self.players) < 2
 
         await self.game._send(
             self.OPENING_MESSAGE + '\n\n**Players:**\n' + '\n'.join(
@@ -170,13 +155,125 @@ class PlayerQueueingView(discord.ui.View):
         self.players.remove(interaction.user)
         await self._update()
 
+    @discord.ui.button(label='Start!', style=discord.ButtonStyle.primary, disabled=True)
+    async def immediate_start(self, _: discord.ui.Button, interaction: discord.Interaction, /) -> None:
+        if interaction.user != self.game.host:
+            return await interaction.response.send_message(
+                'Only the host can start this game.',
+                ephemeral=True
+            )
+
+        if len(self.players) < 2:
+            return await interaction.response.send_message(
+                'There must be at least 2 players in order to start this game.',
+                ephemeral=True
+            )
+
+        self.stop()
+
+
+class WildCardSubview(discord.ui.View):
+    def __init__(self, game: UNO, hand: Hand, cards: list[Card]) -> None:
+        self.game: UNO = game
+        self.hand: Hand = hand
+        self.cards: list[Card] = cards
+        super().__init__(timeout=360)
+
+    def _update(self, color: Color) -> None:
+        self.game._wild_card_color_store = color
+        self.game.turn += self.game.direction
+        self.game.current = self.cards[-1]
+
+    async def handle(self, color: Color, button: discord.ui.Button, interaction: discord.Interaction) -> None:
+        self._update(color)
+
+        for card in self.cards:
+            self.hand.remove(card)
+
+        await self.game._update(
+            f'{interaction.user.name} plays {" ".join(card.emoji for card in self.cards)}. '
+            f'Color is now {button.emoji}!'
+        )
+
+    @discord.ui.button(emoji='\U0001f7e5')
+    async def red(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
+        await self.handle(Color.red, button, interaction)
+
+    @discord.ui.button(emoji='\U0001f7e6')
+    async def blue(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
+        await self.handle(Color.blue, button, interaction)
+
+    @discord.ui.button(emoji='\U0001f7e8')
+    async def yellow(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
+        await self.handle(Color.yellow, button, interaction)
+
+    @discord.ui.button(emoji='\U0001f7e9')
+    async def green(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
+        await self.handle(Color.green, button, interaction)
+
+
+class WildPlus4Subview(WildCardSubview):
+    async def handle(self, color: Color, button: discord.ui.Button, interaction: discord.Interaction) -> None:
+        self._update(color)
+
+        for card in self.cards:
+            self.hand.remove(card)
+            self.game.draw_queue += 4
+
+        await self.game._update(
+            f'{interaction.user.name} plays {" ".join(card.emoji for card in self.cards)}. '
+            f'Draw {self.game.draw_queue}! Color is now {button.emoji}.'
+        )
+
+
+class CardButton(discord.ui.Button['DeckView']):
+    def __init__(self, game: UNO, card: Card, *, disabled: bool = True) -> None:
+        super().__init__(emoji=card.emoji, disabled=disabled)
+        self.game: UNO = game
+        self.card: Card = card
+
+    async def callback(self, interaction: discord.Interaction, /) -> None:
+        await self.game.play(interaction, self.view.hand, self.card)
+
 
 class DeckView(discord.ui.View):
     # This will be sent ephemerally, so
     # user checks won't be needed
 
-    def __init__(self) -> None:
+    def __init__(self, game: UNO, hand: Hand) -> None:
         super().__init__(timeout=None)
+        self.game: UNO = game
+        self.hand: Hand = hand
+        self._add_buttons()
+
+    def _add_buttons(self) -> None:
+        self.clear_items()
+
+        for card in self.hand.cards[:25]:
+            disabled = (  # TODO: Increase readability here?
+                (
+                    self.game.current_player != self.hand.player
+                    and not (self.game.rule_set.jump_in and self.game.current == card)
+                ) or not self.game.can_play(card)
+            )
+
+            self.add_item(CardButton(self.game, card, disabled=disabled))
+
+
+class ImmediatePlaySubview(discord.ui.View):
+    def __init__(self, game: UNO, hand: Hand, card: Card) -> None:
+        self.game: UNO = game
+        self.hand: Hand = hand
+        self.card: Card = card
+        super().__init__(timeout=360)
+
+    @discord.ui.button(label='Yes', style=discord.ButtonStyle.success)
+    async def yes(self, _: discord.ui.Button, interaction: discord.Interaction) -> None:
+        await self.game.play(interaction, self.hand, self.card)
+
+    @discord.ui.button(label='No', style=discord.ButtonStyle.danger)
+    async def no(self, _: discord.ui.Button, interaction: discord.Interaction) -> None:
+        await self.game._update(f'{interaction.user.name} drew a card.')
 
 
 class GameView(discord.ui.View):
@@ -184,9 +281,94 @@ class GameView(discord.ui.View):
         super().__init__(timeout=None)
         self.game: UNO = game
 
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return interaction.user in self.game.players
+
     @discord.ui.button(label='View deck')
     async def view_deck(self, _: discord.ui.Button, interaction: discord.Interaction) -> None:
-        ...
+        await interaction.response.send_message(
+            content='Click on a card button to play it.',
+            view=DeckView(self.game, discord.utils.get(self.game.hands, player=interaction.user)),
+            ephemeral=True
+        )
+
+    @discord.ui.button(label='Draw', style=discord.ButtonStyle.green)
+    async def draw(self, _: discord.ui.Button, interaction: discord.Interaction) -> None:
+        if self.game.current_player != interaction.user:
+            return await interaction.response.send_message(
+                'It isn\'t your turn!',
+                ephemeral=True
+            )
+
+        hand = discord.utils.get(self.game.hands, player=interaction.user)
+
+        # All unsafe players are now safe as they haven't been caught
+        self.game._uno_safe = {hand.player for hand in self.game.hands if len(hand) <= 1}
+
+        if self.game.draw_queue > 0:
+            cards = hand.draw(self.game.draw_queue)
+            if isinstance(cards, Card):
+                cards = [cards]
+
+            self.game.draw_queue = 0
+            await interaction.response.send_message(
+                f'You drew: {" ".join(card.emoji for card in cards)}',
+                ephemeral=True
+            )
+
+            self.game.turn += self.game.direction
+            await self.game._update(f'{interaction.user.name} drew {len(cards)} cards.')
+
+        else:
+            card = hand.draw()
+            if self.game.current.match(card):
+                return await interaction.response.send_message(
+                    f'You drew a {card.emoji}. Would you like to play it?',
+                    view=ImmediatePlaySubview(self.game, hand, card),
+                    ephemeral=True
+                )
+
+            self.game.turn += self.game.direction
+            await interaction.response.send_message(f'You drew a {card.emoji}.', ephemeral=True)
+            await self.game._update(f'{interaction.user.name} drew a card.')
+
+    @discord.ui.button(label='UNO!', style=discord.ButtonStyle.primary)
+    async def uno(self, _: discord.ui.Button, interaction: discord.Interaction) -> None:
+        if interaction.user in self.game._uno_safe:
+            return await interaction.response.send_message(
+                'You are already safe from being called out!',
+                ephemeral=True
+            )
+
+        hand = discord.utils.get(self.game.hands, player=interaction.user)
+        if len(hand) != 1:
+            return await interaction.response.send_message(
+                'You must only have one card in order to say "UNO".',
+                ephemeral=True
+            )
+
+        self.game._uno_safe.add(interaction.user)
+        await interaction.response.send_message(f'{interaction.user.name}: UNO!')
+
+    @discord.ui.button(label='Call out', style=discord.ButtonStyle.primary)
+    async def call_out(self, _: discord.ui.Button, interaction: discord.Interaction) -> None:
+        found = discord.utils.find(
+            lambda hand: len(hand) == 1 and hand.player not in self.game._uno_safe
+            and hand.player != interaction.user,
+            self.game.hands
+        )
+
+        if not found:
+            return await interaction.response.send_message(
+                'There is no one to call out.',
+                ephemeral=True
+            )
+
+        await interaction.response.send_message(
+            f'{interaction.user.name} calls out UNO for {found.player.name}.'
+        )
+
+        found.draw(2)
 
 
 class Deck:
@@ -226,6 +408,11 @@ class Hand:
     def __len__(self) -> int:
         return len(self._cards)
 
+    def __eq__(self: E, other: E) -> bool:
+        if isinstance(other, self.__class__):
+            return other.player == self.player and other.game == self.game
+        return False
+
     def _draw_one(self) -> Card:
         card = self.game.deck.pop()
         self._cards.append(card)
@@ -240,6 +427,9 @@ class Hand:
             return self._draw_one()
 
         return [self._draw_one() for _ in range(amount)]
+
+    def remove(self, card: Card, /) -> None:
+        self._cards.remove(card)
 
     @staticmethod
     def _card_sort_key(card: Card, /) -> tuple[int, int, int]:
@@ -267,32 +457,50 @@ class UNO:
 
         self.deck: Deck = Deck(self)
         self.hands: list[Hand] = []  # This will also determine order
+
         self.current: Card = None
+        self.draw_queue: int = 0
         self.direction: int = 1
         self.turn: int = 0
 
         self._message: discord.Message = None
+        self._internal_view: GameView = None
+        self._wild_card_color_store: Color = None
+        self._uno_safe: set[discord.Member] = set()
 
     def __repr__(self) -> str:
         return f'<UNO players={len(self.players)} turn={self.turn} rule_set={self.rule_set!r}>'
 
     @property
     def current_hand(self) -> Hand:
-        return self.hands[self.turn]
+        return self.hands[self.turn % len(self.hands)]
 
     @property
     def current_player(self) -> discord.Member:
         return self.current_hand.player
 
+    @property
+    def winner(self) -> Optional[discord.Member]:
+        hand = discord.utils.find(lambda hand: len(hand) <= 0, self.hands)
+        if hand is not None:
+            return hand.player
+
     def get_hand(self, user: discord.Member, /) -> Hand:
         return discord.utils.get(self.hands, player=user)
 
     async def _send(self, content: str = None, **kwargs) -> discord.Message:
-        if self._message is None:
+        async def fallback() -> discord.Message:
             self._message = res = await self.ctx.send(content, **kwargs)
             return res
 
-        await self._message.edit(content=content, **kwargs)
+        if self._message is None:
+            return await fallback()
+
+        try:
+            await self._message.edit(content=content, **kwargs)
+        except discord.NotFound:
+            return await fallback()
+
         return self._message
 
     async def _resend(self, content: str = None, **kwargs) -> discord.Message:
@@ -302,7 +510,10 @@ class UNO:
     async def choose_rule_set(self) -> None:
         self.rule_set = RuleSet()
         content = f'{self.host.mention}, choose the game rules you would like to use.'
-        await self._send(content=content, view=RuleSetPromptingView(self))
+        view = RuleSetPromptingView(self)
+
+        await self._send(content=content, view=view)
+        await view.wait()
 
     async def queue_players(self) -> None:
         view = PlayerQueueingView(self)
@@ -325,24 +536,50 @@ class UNO:
         self.deck.shuffle()
         self.current = self.deck.pop()
         self._deal_cards()
+        self._internal_view = GameView(self)
 
     async def start(self) -> None:
         await self._run_initial_prompts()
         self._setup()
+        await self._send(embed=self.build_embed(), view=self._internal_view)
 
     async def _update(self, content: str = None, **kwargs) -> None:
-        await self._resend(content, embed=self.build_embed(), **kwargs)
+        winner = self.winner
+        if winner is not None:
+            content = f'\U0001f389 {winner.name}: **UNO out!** {winner.mention} has won this game!'
+
+            self._internal_view.stop()
+            self._internal_view = None
+
+        await self._resend(content, embed=self.build_embed(), view=self._internal_view, **kwargs)
+
+    def can_play(self, card: Card, /) -> bool:
+        if not self.current.match(card) and self.current.color is not Color.wild:
+            return False
+
+        if self.current.color is Color.wild and self._wild_card_color_store is not None:
+            return card.color is self._wild_card_color_store or card.color is Color.wild
+
+        return True
 
     def build_embed(self) -> None:
-        embed = discord.Embed(timestamp=discord.utils.utcnow())
+        if self.current.color is not Color.wild or self._wild_card_color_store is None:
+            color = COLORS[self.current.color]
+        else:
+            color = COLORS[self._wild_card_color_store]
+
+        embed = discord.Embed(
+            color=discord.Color.from_rgb(*color),
+            timestamp=discord.utils.utcnow()
+        )
         embed.set_thumbnail(url=self.current.image_url)
 
         embed.description = '\n'.join(
             (
                 hand.player.name
-                if hand.player == self.current
+                if hand.player != self.current_player
                 else f'**{hand.player.name}**'
-            ) + f'({len(hand):,} cards)'
+            ) + f' ({len(hand):,} card{"s" if len(hand) != 1 else ""})'
             for hand in self.hands
         )
 
@@ -350,12 +587,80 @@ class UNO:
             name=f"{self.current_player.name}'s turn!",
             icon_url=self.current_player.avatar.url
         )
+
+        if self.draw_queue > 0:
+            if self.rule_set.progressive:
+                content = f'Stack on or draw {self.draw_queue}'
+            else:
+                content = f'Draw {self.draw_queue}!'
+            embed.set_footer(text=content)
+
         return embed
+
+    async def play(self, interaction: discord.Interaction, hand: Hand, card: Card) -> None:
+        if self.current_player != hand.player:
+            if self.rule_set.jump_in and self.current == card:
+                await self.handle_jump_in(hand, card)
+            else:
+                return await interaction.response.send_message(
+                    'It is not your turn.',
+                    ephemeral=True
+                )
+
+        if not self.can_play(card):
+            return await interaction.response.send_message(
+                'You cannot play this card.',
+                ephemeral=True
+            )
+
+        if self.draw_queue > 0:
+            if not self.rule_set.progressive:
+                return await interaction.response.send_message(
+                    'You cannot play anything, you must draw instead.',
+                    ephemeral=True
+                )
+
+            can_play = card.type is self.current.type is CardType.plus_2 or card.type is CardType.plus_4
+            if not can_play:
+                return await interaction.response.send_message(
+                    'You must stack onto the draw, or draw yourself.',
+                    ephemeral=True
+                )
+
+        # All unsafe players are now safe as they haven't been caught
+        self._uno_safe = {hand.player for hand in self.hands if len(hand) <= 1}
+
+        if card.type is CardType.number:
+            await self.handle_play([card])
+
+        elif card.type is CardType.reverse:
+            await self.handle_reverse_card([card])
+
+        elif card.type is CardType.skip:
+            await self.handle_skip_card([card])
+
+        elif card.type is CardType.plus_2:
+            await self.handle_draw_2([card])
+
+        elif card.color is Color.wild:
+            cls = WildCardSubview if card.type is CardType.wild else WildPlus4Subview
+
+            await interaction.response.send_message(
+                'What will the new color be?',
+                view=cls(self, hand, [card]),
+                ephemeral=True
+            )
+
+        else:
+            await interaction.response.send_message(
+                'No implementation for this card yet, sorry.',
+                ephemeral=True
+            )
 
     # list to take care of stacks
     async def handle_play(self, cards: list[Card]) -> None:
         for card in cards:
-            self.current_hand.cards.remove(card)
+            self.current_hand.remove(card)
 
         if len(cards) == 1:
             content = f'{self.current_player.name} plays a {cards[0].emoji}.'
@@ -363,4 +668,63 @@ class UNO:
             content = f'{self.current_player.name} plays: {" ".join(card.emoji for card in cards)}'
 
         self.current = cards[-1]
+        self.turn += self.direction
         await self._update(content)
+
+    async def handle_jump_in(self, hand: Hand, card: Card) -> None:
+        hand.remove(card)
+        content = f'{hand.player.name} jumps in with a {card.emoji}.'
+
+        self.current = card
+        self.turn = self.hands.index(hand)
+        await self._update(content)
+
+    async def handle_reverse_card(self, cards: list[Card]) -> None:
+        for card in cards:
+            self.current_hand.remove(card)
+
+        extra = ''
+        if len(cards) % 2 == 1:
+            self.direction *= -1
+            extra = ' Direction is now reversed.'
+
+        if len(cards) == 1:
+            content = f'{self.current_player.name} plays a {cards[0].emoji}.'
+        else:
+            content = f'{self.current_player.name} plays: {" ".join(card.emoji for card in cards)}'
+
+        self.current = cards[-1]
+        self.turn += self.direction
+        await self._update(content + extra)
+
+    async def handle_skip_card(self, cards: list[Card]) -> None:
+        extra = 0
+
+        for card in cards:
+            self.current_hand.remove(card)
+            extra += self.direction
+
+        if len(cards) == 1:
+            content = f'{self.current_player.name} plays a {cards[0].emoji}.'
+        else:
+            content = f'{self.current_player.name} plays: {" ".join(card.emoji for card in cards)}'
+
+        self.current = cards[-1]
+        self.turn += self.direction + extra
+        await self._update(content)
+
+    async def handle_draw_2(self, cards: list[Card]) -> None:
+        for card in cards:
+            self.current_hand.remove(card)
+            self.draw_queue += 2
+
+        extra = f'Draw {self.draw_queue}!'
+
+        if len(cards) == 1:
+            content = f'{self.current_player.name} plays a {cards[0].emoji}. '
+        else:
+            content = f'{self.current_player.name} plays: {" ".join(card.emoji for card in cards)}. '
+
+        self.current = cards[-1]
+        self.turn += self.direction
+        await self._update(content + extra)

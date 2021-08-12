@@ -60,6 +60,18 @@ class UNOBot(commands.Bot):
     async def on_first_ready(self) -> None:
         print(f'Logged in as {self.user} (ID: {self.user.id})')
 
+    async def on_command_error(self, ctx: commands.Context, error: Exception) -> None:
+        if isinstance(error, commands.CommandNotFound):
+            return
+
+        error = getattr(error, 'original', error)
+
+        if isinstance(error, discord.NotFound) and error.code == 10062:
+            return
+
+        await ctx.send(error)
+        raise error
+
     def run(self) -> None:
         try:
             super().run(os.environ['TOKEN'])
