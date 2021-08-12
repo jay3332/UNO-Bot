@@ -133,7 +133,7 @@ class Card:
         )
 
     def match(self: E, other: E, /) -> bool:
-        return other.color is self.color or other.is_wild() or self.stackable_width(other)
+        return other.color is self.color or other.is_wild() or self.stackable_with(other)
 
     def stackable_with(self: E, other: E, /) -> bool:
         return (
