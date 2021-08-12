@@ -5,7 +5,17 @@ import random
 
 from discord.ext import commands
 from dataclasses import dataclass
-from typing import Iterable, Literal, NamedTuple, Optional, TypeVar, Union, overload
+
+from typing import (
+    Awaitable,
+    Iterable,
+    Literal,
+    NamedTuple,
+    Optional,
+    TypeVar,
+    Union,
+    overload
+)
 
 from .cards import Card, create_deck
 from .enums import CardType, Color
@@ -542,6 +552,9 @@ class UNO:
         await self._run_initial_prompts()
         self._setup()
         await self._send(embed=self.build_embed(), view=self._internal_view)
+
+    def wait(self) -> Awaitable[None]:
+        return self._internal_view.wait()
 
     async def _update(self, content: str = None, **kwargs) -> None:
         winner = self.winner

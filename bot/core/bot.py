@@ -5,6 +5,11 @@ from dotenv import load_dotenv
 from discord.ext import commands
 from jishaku.flags import Flags
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..uno.game import UNO
+
 load_dotenv()
 
 Flags.NO_UNDERSCORE = True
@@ -29,6 +34,9 @@ ALLOWED_MENTIONS = discord.AllowedMentions(
 
 class UNOBot(commands.Bot):
     def __init__(self) -> None:
+        # Map channel_id's to UNO game instances
+        self.uno_instances: dict[int, UNO] = {}
+
         super().__init__(
             command_prefix=self.__class__._get_prefix,
             case_insensitive=True,
