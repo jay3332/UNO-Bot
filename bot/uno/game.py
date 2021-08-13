@@ -626,6 +626,12 @@ class UNO:
                 ephemeral=True
             )
 
+        if card not in hand._cards:
+            return await interaction.response.send_message(
+                'You have already discarded this card.',
+                ephemeral=True
+            )
+
         if self.draw_queue > 0:
             if not self.rule_set.progressive:
                 return await interaction.response.send_message(
