@@ -468,11 +468,11 @@ class UNO:
         self.deck: Deck = Deck(self)
         self.hands: list[Hand] = []  # This will also determine order
 
-        self.current: Card = None
         self.draw_queue: int = 0
         self.direction: int = 1
         self.turn: int = 0
 
+        self._discard_pile: list[Card] = []
         self._message: discord.Message = None
         self._internal_view: GameView = None
         self._wild_card_color_store: Color = None
@@ -480,6 +480,17 @@ class UNO:
 
     def __repr__(self) -> str:
         return f'<UNO players={len(self.players)} turn={self.turn} rule_set={self.rule_set!r}>'
+
+    @property
+    def current(self) -> Optional[Card]:
+        try:
+            return self._discard_pile[-1]
+        except IndexError:
+            return None  # For readability
+
+    @current.setter
+    def current(self, new: Card) -> None:
+        self._discard_pile.append(new)
 
     @property
     def current_hand(self) -> Hand:
@@ -557,6 +568,10 @@ class UNO:
         return self._internal_view.wait()
 
     async def _update(self, content: str = None, **kwargs) -> None:
+        if len(self.deck) <= 1:
+            self.deck._internal_deck += self._discard_pile[:-1]
+            self._discard_pile = [self._discard_pile[-1]]
+
         winner = self.winner
         if winner is not None:
             content = f'\U0001f389 {winner.name}: **UNO out!** {winner.mention} has won this game!'
