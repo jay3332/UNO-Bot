@@ -109,7 +109,8 @@ class RuleSetPromptingView(HostOnlyView):
         self.game: UNO = game
 
     @discord.ui.button(label='Continue', style=discord.ButtonStyle.success, row=1)
-    async def _continue(self, _button: discord.ui.Button, _interaction: discord.Interaction, /) -> None:
+    async def _continue(self, _button: discord.ui.Button, interaction: discord.Interaction, /) -> None:
+        await interaction.response.defer()
         await self.game.queue_players()
         self.stop()
 
