@@ -294,7 +294,7 @@ class GameView(discord.ui.View):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         return interaction.user in self.game.players
 
-    @discord.ui.button(label='View deck')
+    @discord.ui.button(label='View cards')
     async def view_deck(self, _: discord.ui.Button, interaction: discord.Interaction) -> None:
         await interaction.response.send_message(
             content='Click on a card button to play it.',
