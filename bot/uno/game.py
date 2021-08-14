@@ -513,6 +513,10 @@ class Hand:
     def draw(self, amount: Literal[1] = 1, /) -> Card:
         ...
 
+    @overload
+    def draw(self, amount: int = 1, /) -> list[Card]:
+        ...
+
     def draw(self, amount: int = 1, /) -> Union[list[Card], Card]:
         if amount == 1:
             return self._draw_one()
