@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-import discord
+import math
 import random
+import discord
 
 from discord.ext import commands
 from dataclasses import dataclass
+from collections import defaultdict
 
 from typing import (
     Awaitable,
@@ -287,13 +289,83 @@ class ImmediatePlaySubview(discord.ui.View):
         await self.game._update(f'{interaction.user.name} drew a card.')
 
 
+class VoteKickConfirmationView(discord.ui.View):
+    def __init__(self, game: UNO, target: discord.Member) -> None:
+        super().__init__(timeout=None)
+
+        self.game: UNO = game
+        self.target: discord.Member = target
+
+    @discord.ui.button(label='Yes', style=discord.ButtonStyle.success)
+    async def yes(self, _: discord.ui.Button, interaction: discord.Interaction) -> None:
+        self.game._vote_kicks[self.target].add(interaction.user)
+
+        await interaction.response.send_message(
+            f'{interaction.user.name} has voted to kick {self.target.name} out of this game. '
+            f'({len(self.game._vote_kicks[self.target])}/{self.game.vote_kick_threshold})'
+        )
+        await self.game.handle_votekick(self.target)
+
+    @discord.ui.button(label='No', style=discord.ButtonStyle.danger)
+    async def no(self, _: discord.ui.Button, interaction: discord.Interaction) -> None:
+        await interaction.response.send_message('Vote-kick cancelled.', ephemeral=True)
+
+
+class VoteKickSelect(discord.ui.Select['VoteKickView']):
+    def __init__(self, game: UNO, user: discord.Member) -> None:
+        super().__init__(
+            placeholder='Choose someone to votekick...',
+            options=[
+                discord.SelectOption(label=str(hand.player), value=hand.player.id)
+                for hand in game.hands if hand.player != user
+            ]
+        )
+        self.game: UNO = game
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        value = int(interaction.data['values'][0])
+        target = discord.utils.get(self.game.hands, player__id=value).player
+
+        if target in self.game._always_skip:
+            return await interaction.response.send_message(
+                'This person is not in the game.',
+                ephemeral=True
+            )
+
+        if target in self.game._vote_kicks[target]:
+            return await interaction.response.send_message(
+                'You have already vote-kicked this person.',
+                ephemeral=True
+            )
+
+        await interaction.response.send_message(
+            f'Are you sure you would like like to vote-kick **{target}** out of this game?\n'
+            'You cannot revoke your vote.',
+            view=VoteKickConfirmationView(self.game, target),
+            ephemeral=True
+        )
+
+
+class VoteKickView(discord.ui.View):
+    def __init__(self, game: UNO, user: discord.Member) -> None:
+        super().__init__(timeout=120)
+        self.add_item(VoteKickSelect(game, user))
+
+
 class GameView(discord.ui.View):
     def __init__(self, game: UNO) -> None:
         super().__init__(timeout=None)
         self.game: UNO = game
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        return interaction.user in self.game.players
+        if interaction.user not in self.game.players or interaction.user in self.game._always_skip:
+            await interaction.response.send_message(
+                'You are not in this game!',
+                ephemeral=True
+            )
+            return False
+
+        return True
 
     @discord.ui.button(label='View cards')
     async def view_deck(self, _: discord.ui.Button, interaction: discord.Interaction) -> None:
@@ -380,6 +452,14 @@ class GameView(discord.ui.View):
         )
 
         found.draw(2)
+
+    @discord.ui.button(label='Vote-kick', style=discord.ButtonStyle.danger)
+    async def vote_kick(self, _: discord.ui.Button, interaction: discord.Interaction) -> None:
+        await interaction.response.send_message(
+            content='Choose the player you would like to vote-kick.',
+            view=VoteKickView(self.game, interaction.user),
+            ephemeral=True
+        )
 
 
 class Deck:
@@ -471,16 +551,39 @@ class UNO:
 
         self.draw_queue: int = 0
         self.direction: int = 1
-        self.turn: int = 0
+
+        self._turn: int = 0
+        self._previous_content: str = None
+        self._internal_view: GameView = None
+        self._message: discord.Message = None
+        self._wild_card_color_store: Color = None
 
         self._discard_pile: list[Card] = []
-        self._message: discord.Message = None
-        self._internal_view: GameView = None
-        self._wild_card_color_store: Color = None
         self._uno_safe: set[discord.Member] = set()
+        self._always_skip: set[discord.Member] = set()  # Will show as strikethrough
+        self._vote_kicks: dict[discord.Member, set[discord.Member]] = defaultdict(set)
 
     def __repr__(self) -> str:
         return f'<UNO players={len(self.players)} turn={self.turn} rule_set={self.rule_set!r}>'
+
+    @property
+    def turn(self) -> int:
+        return self._turn
+
+    @turn.setter
+    def turn(self, new: int) -> None:
+        diff = new - self.turn
+
+        if diff == 0:
+            return
+
+        method = int.__add__ if diff > 0 else int.__sub__
+
+        for _ in range(abs(diff)):
+            self._turn = method(self._turn, 1)
+
+            while self.current_player in self._always_skip:  # Imagine if Python had do-while loops
+                self._turn = method(self._turn, 1)
 
     @property
     def current(self) -> Optional[Card]:
@@ -507,10 +610,17 @@ class UNO:
         if hand is not None:
             return hand.player
 
+    @property
+    def vote_kick_threshold(self) -> int:
+        # We want more than half
+        return math.ceil(len(self.hands) / 2)
+
     def get_hand(self, user: discord.Member, /) -> Hand:
         return discord.utils.get(self.hands, player=user)
 
     async def _send(self, content: str = None, **kwargs) -> discord.Message:
+        self._previous_content = content
+
         async def fallback() -> discord.Message:
             self._message = res = await self.ctx.send(content, **kwargs)
             return res
@@ -591,6 +701,21 @@ class UNO:
 
         return True
 
+    def _embed_format(self, hand: Hand) -> None:
+        fmt = '{}'
+
+        if self.current_player == hand.player:
+            fmt = '**{}**'
+        if hand.player in self._always_skip:
+            fmt = '~~{}~~'
+
+        base = fmt.format(
+            discord.utils.escape_markdown(hand.player.name)
+        )
+
+        s = 's' if len(hand) != 1 else ''
+        return f'{base} ({len(hand):,} card{s})'
+
     def build_embed(self) -> None:
         if self.current.color is not Color.wild or self._wild_card_color_store is None:
             color = COLORS[self.current.color]
@@ -601,16 +726,9 @@ class UNO:
             color=discord.Color.from_rgb(*color),
             timestamp=discord.utils.utcnow()
         )
-        embed.set_thumbnail(url=self.current.image_url)
 
-        embed.description = '\n'.join(
-            (
-                hand.player.name
-                if hand.player != self.current_player
-                else f'**{hand.player.name}**'
-            ) + f' ({len(hand):,} card{"s" if len(hand) != 1 else ""})'
-            for hand in self.hands
-        )
+        embed.set_thumbnail(url=self.current.image_url)
+        embed.description = '\n'.join(map(self._embed_format, self.hands))
 
         embed.set_author(
             name=f"{self.current_player.name}'s turn!",
@@ -763,3 +881,21 @@ class UNO:
         self.current = cards[-1]
         self.turn += self.direction
         await self._update(content + extra)
+
+    async def handle_leave(self, hand: Hand) -> None:
+        self._always_skip.add(hand.player)
+
+        if self.current_player == hand.player:
+            self.turn += self.direction
+
+        # Put this user's cards back in the deck,
+        # but don't remove them (as they will win)
+        self.deck._internal_deck += hand._cards
+        await self._update(self._previous_content)
+
+    async def handle_votekick(self, user: discord.Member) -> None:
+        if len(self._vote_kicks[user]) >= self.vote_kick_threshold:
+            hand = discord.utils.get(self.hands, player=user)
+
+            await self.ctx.send(f'{user.name} has been vote-kicked from the game.')
+            await self.handle_leave(hand)
