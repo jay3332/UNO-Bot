@@ -283,10 +283,12 @@ class ImmediatePlaySubview(discord.ui.View):
     @discord.ui.button(label='Yes', style=discord.ButtonStyle.success)
     async def yes(self, _: discord.ui.Button, interaction: discord.Interaction) -> None:
         await self.game.play(interaction, self.hand, self.card)
+        self.stop()
 
     @discord.ui.button(label='No', style=discord.ButtonStyle.danger)
     async def no(self, _: discord.ui.Button, interaction: discord.Interaction) -> None:
         await self.game._update(f'{interaction.user.name} drew a card.')
+        self.stop()
 
 
 class VoteKickConfirmationView(discord.ui.View):
@@ -305,10 +307,12 @@ class VoteKickConfirmationView(discord.ui.View):
             f'({len(self.game._vote_kicks[self.target])}/{self.game.vote_kick_threshold})'
         )
         await self.game.handle_votekick(self.target)
+        self.stop()
 
     @discord.ui.button(label='No', style=discord.ButtonStyle.danger)
     async def no(self, _: discord.ui.Button, interaction: discord.Interaction) -> None:
         await interaction.response.send_message('Vote-kick cancelled.', ephemeral=True)
+        self.stop()
 
 
 class VoteKickSelect(discord.ui.Select['VoteKickView']):
@@ -345,6 +349,8 @@ class VoteKickSelect(discord.ui.Select['VoteKickView']):
             ephemeral=True
         )
 
+        self.view.stop()
+
 
 class VoteKickView(discord.ui.View):
     def __init__(self, game: UNO, user: discord.Member) -> None:
@@ -364,7 +370,6 @@ class GameView(discord.ui.View):
                 ephemeral=True
             )
             return False
-
         return True
 
     @discord.ui.button(label='View cards')
