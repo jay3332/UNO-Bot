@@ -273,6 +273,74 @@ class DeckView(discord.ui.View):
             self.add_item(CardButton(self.game, card, disabled=disabled))
 
 
+class StackCardButton(discord.ui.Button['StackView']):
+    def __init__(self, card: Card) -> None:
+        super().__init__(emoji=card.emoji)
+        self.card: Card = card
+
+    async def callback(self, interaction: discord.Interaction, /) -> None:
+        self.view.cards.append(self.card)
+
+        if total := sum(
+            self.card.stackable_with(card)
+            for card in self.view.hand._cards
+            if not any(inner is card for inner in self.view.cards)
+        ):
+            term = 'another card' if total == 1 else 'more cards'
+            view = StackView(self.view.game, self.view.hand, self.view.cards)
+
+            await interaction.response.send_message(
+                f'You can stack {term} on to your play. Click a card to '
+                'stack, or "Play" to directly play without stacking further.',
+                view=view,
+                ephemeral=True
+            )
+            await view.wait()
+
+            self.view.cards = view.cards
+            self.view.stop()
+            return
+
+        self.view.stop()
+
+
+class StackDirectPlay(discord.ui.Button['StackView']):
+    def __init__(self) -> None:
+        super().__init__(label='Play', style=discord.ButtonStyle.success)
+
+    async def callback(self, interaction: discord.Interaction, /) -> None:
+        self.view.stop()
+
+
+class StackView(discord.ui.View):
+    # See comment in DeckView
+
+    def __init__(self, game: UNO, hand: Hand, cards: list[Card]) -> None:
+        super().__init__(timeout=None)
+        self.game: UNO = game
+        self.hand: Hand = hand
+        self.cards: list[Card] = cards
+        self._add_buttons()
+
+    def _get_stackable_cards(self) -> Iterable[Card]:
+        target = self.cards[-1]
+
+        yield from (
+            card
+            for card in self.hand._cards
+            if all(inner is not card for inner in self.cards)
+            and target.stackable_with(card)
+        )
+
+    def _add_buttons(self) -> None:
+        self.clear_items()
+
+        for card in self._get_stackable_cards():
+            self.add_item(StackCardButton(card))
+
+        self.add_item(StackDirectPlay())
+
+
 class ImmediatePlaySubview(discord.ui.View):
     def __init__(self, game: UNO, hand: Hand, card: Card) -> None:
         self.game: UNO = game
@@ -753,6 +821,31 @@ class UNO:
 
         return embed
 
+    async def _handle_stacks(
+        self,
+        interaction: discord.Interaction,
+        hand: Hand,
+        originator: Card
+    ) -> list[Card]:
+        if total := sum(
+            originator.stackable_with(card)
+            for card in hand._cards
+            if card is not originator
+        ):
+            term = 'a card' if total == 1 else 'cards'
+            view = StackView(self, hand, [originator])
+
+            await interaction.response.send_message(
+                f'You can stack {term} on to your play. Click a card to '
+                'stack, or "Play" to directly play without stacking.',
+                view=view,
+                ephemeral=True
+            )
+            await view.wait()
+            return view.cards
+
+        return [originator]
+
     async def play(self, interaction: discord.Interaction, hand: Hand, card: Card) -> None:
         if self.current_player != hand.player:
             if self.rule_set.jump_in and self.current == card:
@@ -792,24 +885,29 @@ class UNO:
         # All unsafe players are now safe as they haven't been caught
         self._uno_safe = {hand.player for hand in self.hands if len(hand) <= 1}
 
+        if self.rule_set.stacking:
+            cards = await self._handle_stacks(interaction, hand, card)
+        else:
+            cards = [card]
+
         if card.type is CardType.number:
-            await self.handle_play([card])
+            await self.handle_play(cards)
 
         elif card.type is CardType.reverse:
-            await self.handle_reverse_card([card])
+            await self.handle_reverse_card(cards)
 
         elif card.type is CardType.skip:
-            await self.handle_skip_card([card])
+            await self.handle_skip_card(cards)
 
         elif card.type is CardType.plus_2:
-            await self.handle_draw_2([card])
+            await self.handle_draw_2(cards)
 
         elif card.color is Color.wild:
             cls = WildCardSubview if card.type is CardType.wild else WildPlus4Subview
 
             await interaction.response.send_message(
                 'What will the new color be?',
-                view=cls(self, hand, [card]),
+                view=cls(self, hand, cards),
                 ephemeral=True
             )
 
