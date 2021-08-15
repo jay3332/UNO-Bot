@@ -207,6 +207,7 @@ class WildCardSubview(discord.ui.View):
             f'{interaction.user.name} plays {" ".join(card.emoji for card in self.cards)}. '
             f'Color is now {button.emoji}!'
         )
+        self.stop()
 
     @discord.ui.button(emoji='\U0001f7e5')
     async def red(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
@@ -386,7 +387,7 @@ class VoteKickConfirmationView(discord.ui.View):
 class VoteKickSelect(discord.ui.Select['VoteKickView']):
     def __init__(self, game: UNO, user: discord.Member) -> None:
         super().__init__(
-            placeholder='Choose someone to votekick...',
+            placeholder='Choose someone to vote-kick...',
             options=[
                 discord.SelectOption(label=str(hand.player), value=hand.player.id)
                 for hand in game.hands if hand.player != user
@@ -826,7 +827,7 @@ class UNO:
         interaction: discord.Interaction,
         hand: Hand,
         originator: Card
-    ) -> list[Card]:
+    ) -> discord.Interaction:
         if total := sum(
             originator.stackable_with(card)
             for card in hand._cards
@@ -841,6 +842,7 @@ class UNO:
                 view=view,
                 ephemeral=True
             )
+
             await view.wait()
             return view.cards
 
@@ -904,18 +906,16 @@ class UNO:
 
         elif card.color is Color.wild:
             cls = WildCardSubview if card.type is CardType.wild else WildPlus4Subview
-
-            await interaction.response.send_message(
-                'What will the new color be?',
+            kwargs = dict(
+                content='What will the new color be?',
                 view=cls(self, hand, cards),
                 ephemeral=True
             )
 
-        else:
-            await interaction.response.send_message(
-                'No implementation for this card yet, sorry.',
-                ephemeral=True
-            )
+            try:
+                await interaction.response.send_message(**kwargs)
+            except (discord.InteractionResponded, discord.NotFound):
+                await interaction.followup.send(**kwargs)
 
     # list to take care of stacks
     async def handle_play(self, cards: list[Card]) -> None:
