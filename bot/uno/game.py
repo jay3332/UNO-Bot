@@ -827,7 +827,7 @@ class UNO:
         interaction: discord.Interaction,
         hand: Hand,
         originator: Card
-    ) -> discord.Interaction:
+    ) -> list[Card]:
         if total := sum(
             originator.stackable_with(card)
             for card in hand._cards
