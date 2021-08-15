@@ -96,6 +96,9 @@ class Card:
     def __hash__(self) -> int:
         return hash((self.color, self.type, self.value))
 
+    def __repr__(self) -> str:
+        return f'<Card color={self.color.name} type={self.type.name} value={self.value}>'
+
     def __eq__(self: E, other: E) -> bool:
         return (
             isinstance(other, self.__class__)
