@@ -494,7 +494,7 @@ class GameView(discord.ui.View):
 
     @discord.ui.button(label='UNO!', style=discord.ButtonStyle.primary)
     async def uno(self, _: discord.ui.Button, interaction: discord.Interaction) -> None:
-        async with self.uno_lock:
+        async with self._uno_lock:
             if interaction.user in self.game._uno_safe:
                 return await interaction.response.send_message(
                     'You are already safe from being called out!',
