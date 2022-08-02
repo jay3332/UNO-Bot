@@ -430,7 +430,8 @@ class VoteKickView(discord.ui.View):
 class GameView(discord.ui.View):
     def __init__(self, game: UNO) -> None:
         super().__init__(timeout=None)
-        self._uno_lock = False
+
+        self._uno_lock: asyncio.Lock = asyncio.Lock()
         self.game: UNO = game
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -492,49 +493,43 @@ class GameView(discord.ui.View):
 
     @discord.ui.button(label='UNO!', style=discord.ButtonStyle.primary)
     async def uno(self, _: discord.ui.Button, interaction: discord.Interaction) -> None:
-        if interaction.user in self.game._uno_safe or self._uno_lock:
-            return await interaction.response.send_message(
-                'You are already safe from being called out!',
-                ephemeral=True
-            )
-        
-        self._uno_lock = True
+        async with self.uno_lock:
+            if interaction.user in self.game._uno_safe:
+                return await interaction.response.send_message(
+                    'You are already safe from being called out!',
+                    ephemeral=True
+                )
 
-        hand = discord.utils.get(self.game.hands, player=interaction.user)
-        if len(hand) != 1:
-            return await interaction.response.send_message(
-                'You must only have one card in order to say "UNO".',
-                ephemeral=True
-            )
+            hand = discord.utils.get(self.game.hands, player=interaction.user)
+            if len(hand) != 1:
+                return await interaction.response.send_message(
+                    'You must only have one card in order to say "UNO".',
+                    ephemeral=True
+                )
 
-        self.game._uno_safe.add(interaction.user)
-        await interaction.response.send_message(f'{interaction.user.name}: UNO!')
-        
-        self._uno_lock = False
+            self.game._uno_safe.add(interaction.user)
+            await interaction.response.send_message(f'{interaction.user.name}: UNO!')
 
     @discord.ui.button(label='Call out', style=discord.ButtonStyle.primary)
     async def call_out(self, _: discord.ui.Button, interaction: discord.Interaction) -> None:
-        found = discord.utils.find(
-            lambda hand: len(hand) == 1 and hand.player not in self.game._uno_safe
-            and hand.player != interaction.user,
-            self.game.hands
-        )
-
-        if not found or self._uno_lock:
-            return await interaction.response.send_message(
-                'There is no one to call out.',
-                ephemeral=True
+        async with self._uno_lock:
+            found = discord.utils.find(
+                lambda hand: len(hand) == 1 and hand.player not in self.game._uno_safe
+                and hand.player != interaction.user,
+                self.game.hands
             )
-        
-        self._uno_lock = True
 
-        await interaction.response.send_message(
-            f'{interaction.user.name} calls out UNO for {found.player.name}.'
-        )
+            if not found:
+                return await interaction.response.send_message(
+                    'There is no one to call out.',
+                    ephemeral=True
+                )
 
-        found.draw(2)
-        
-        self._uno_lock = False
+            await interaction.response.send_message(
+                f'{interaction.user.name} calls out UNO for {found.player.name}.'
+            )
+
+            found.draw(2)
 
     @discord.ui.button(label='Vote-kick', style=discord.ButtonStyle.danger)
     async def vote_kick(self, _: discord.ui.Button, interaction: discord.Interaction) -> None:
