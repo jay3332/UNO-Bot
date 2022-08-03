@@ -5,7 +5,7 @@ from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont
 
 from textwrap import indent, dedent
-from typing import Awaitable, Tuple
+from typing import Any, Awaitable, Tuple
 
 from .transparency import save_transparent_gif
 from ..uno.cards import Card, CardType, Emojis, cards
@@ -189,7 +189,7 @@ async def fill_emojis(guild: discord.Guild) -> str:
         plus_4 = {!r}
     """)
 
-    def _(sink: any) -> tuple:
+    def _(sink: Any) -> tuple:
         return (
             indent('\n' + ',\n'.join(map(repr, sink.numbers)), ' ' * 12),
             sink.plus_2,
