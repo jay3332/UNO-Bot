@@ -286,7 +286,7 @@ class StackCardButton(discord.ui.Button['StackView']):
         if total := sum(
             self.card.stackable_with(card)
             for card in self.view.hand._cards
-            if not any(inner is card for inner in self.view.cards)
+            if all(inner is not card for inner in self.view.cards)
         ):
             term = 'another card' if total == 1 else 'more cards'
             view = StackView(self.view.game, self.view.hand, self.view.cards)
